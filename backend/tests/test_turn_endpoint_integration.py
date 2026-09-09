@@ -29,7 +29,7 @@ def test_turn_endpoint_full_pipeline(client):
 
     resp = client.post(
         "/api/voice/turn",
-        data={"persona": "jazz", "history": "[]"},
+        data={"company_name": "Jazz", "company_details": "Dial *111# to check prepaid balance.", "history": "[]"},
         files={"audio": ("clip.wav", clip, "audio/wav")},
     )
 
@@ -40,10 +40,27 @@ def test_turn_endpoint_full_pipeline(client):
     assert isinstance(body["reply_audio_base64"], str)
 
 
+def test_turn_endpoint_works_for_a_company_with_no_fixed_persona(client):
+    # The whole point of this feature: any company name/details works,
+    # not just examples baked into the backend ahead of time.
+    resp = client.post(
+        "/api/voice/turn",
+        data={
+            "company_name": "Zylo Airlines",
+            "company_details": "Zylo flies domestic routes across the country.",
+            "history": "[]",
+        },
+        files={"audio": ("clip.wav", _read_fixture("balance_question.wav"), "audio/wav")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["reply_text"].strip()
+
+
 def test_turn_endpoint_carries_history_context(client):
+    company = {"company_name": "Alliance Bank", "company_details": "A retail bank."}
     first = client.post(
         "/api/voice/turn",
-        data={"persona": "bank", "history": "[]"},
+        data={**company, "history": "[]"},
         files={"audio": ("clip1.wav", _read_fixture("name_statement.wav"), "audio/wav")},
     )
     assert first.status_code == 200
@@ -58,7 +75,7 @@ def test_turn_endpoint_carries_history_context(client):
 
     second = client.post(
         "/api/voice/turn",
-        data={"persona": "bank", "history": history},
+        data={**company, "history": history},
         files={"audio": ("clip2.wav", _read_fixture("name_question.wav"), "audio/wav")},
     )
     assert second.status_code == 200

@@ -18,9 +18,15 @@ from pathlib import Path
 import pytest
 from openai import APIStatusError
 
+from app.company_profile import build_system_prompt
 from app.groq_client import chat_reply, synthesize_speech, transcribe_audio
-from app.personas import get_persona
 from tests.conftest import requires_groq
+
+_JAZZ_DETAILS = """Jazz is a mobile network operator offering prepaid and postpaid SIMs.
+Balance check: dial *111# for prepaid balance and remaining bundle data."""
+
+_BANK_DETAILS = """Alliance Bank offers savings/current accounts, debit and credit cards,
+and personal/auto/home loans."""
 
 pytestmark = [pytest.mark.integration, requires_groq]
 
@@ -71,31 +77,36 @@ def test_stt_transcribes_prerecorded_fixture():
     assert transcript.language.lower() == "english"
 
 
-def test_persona_grounded_reply_declines_real_account_data():
-    persona = get_persona("bank")
+def test_company_grounded_reply_declines_real_account_data():
+    system_prompt = build_system_prompt("Alliance Bank", _BANK_DETAILS)
     messages = [
-        {"role": "system", "content": persona.system_prompt},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": "What is the exact balance in my account right now?"},
     ]
     reply = chat_reply(messages)
     assert reply.strip()
-    # The persona is instructed never to invent real account data - the
-    # reply should redirect rather than state a fabricated number.
+    # The system prompt instructs it to never invent real account data -
+    # the reply should redirect rather than state a fabricated number.
     lowered = reply.lower()
     assert not any(f"${n}" in lowered for n in range(10))
 
 
-def test_persona_uses_grounded_fact():
-    persona = get_persona("jazz")
+def test_company_uses_grounded_fact_from_arbitrary_details():
+    # Uses details for a company not in EXAMPLE_TEMPLATES to prove this
+    # isn't special-cased to a couple of hardcoded businesses - any
+    # company name/details a user provides should ground the reply.
+    system_prompt = build_system_prompt(
+        "Zylo Airlines", "Zylo's baggage allowance is 20kg for economy passengers."
+    )
     messages = [
-        {"role": "system", "content": persona.system_prompt},
-        {"role": "user", "content": "How do I check my prepaid balance?"},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "What's the baggage allowance for economy?"},
     ]
     reply = chat_reply(messages)
-    assert "111" in reply  # the *111# short code from the persona's knowledge
+    assert "20" in reply  # the grounded fact from the supplied details
 
 
-def test_persona_replies_in_urdu_when_asked_in_urdu():
+def test_company_replies_in_urdu_when_asked_in_urdu():
     # Mirrors the exact prompt shape app/api/voice.py builds from
     # Whisper's detected language (there's no real Urdu audio fixture to
     # drive this through STT, so it's applied directly here) - verifies
@@ -103,11 +114,11 @@ def test_persona_replies_in_urdu_when_asked_in_urdu():
     # than defaulting to English regardless of what's asked. Run several
     # times: a small/fast model doesn't comply with 100% consistency, so
     # this only fails if it drifts back to English on every attempt.
-    persona = get_persona("jazz")
+    system_prompt = build_system_prompt("Jazz", _JAZZ_DETAILS)
     attempts = 3
     for attempt in range(attempts):
         messages = [
-            {"role": "system", "content": persona.system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": "[Reply only in Urdu.] Main apna balance kaise check karoon?"},
         ]
         reply = chat_reply(messages)

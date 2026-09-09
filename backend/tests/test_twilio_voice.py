@@ -21,7 +21,8 @@ pytestmark = [pytest.mark.integration, requires_groq]
 @pytest.fixture(autouse=True)
 def public_base_url(monkeypatch):
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://example.ngrok-free.app")
-    monkeypatch.setenv("TWILIO_DEFAULT_PERSONA", "jazz")
+    monkeypatch.setenv("TWILIO_COMPANY_NAME", "Jazz")
+    monkeypatch.setenv("TWILIO_COMPANY_DETAILS", "Dial *111# to check prepaid balance.")
 
 
 def test_incoming_call_returns_gather_twiml(client):

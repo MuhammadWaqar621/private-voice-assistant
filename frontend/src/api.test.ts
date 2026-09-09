@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { base64AudioToUrl, fetchPersonas, sendTurn, speakWithBrowserVoice } from "./api";
+import { base64AudioToUrl, fetchTemplates, sendTurn, speakWithBrowserVoice } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -21,14 +21,14 @@ describe("base64AudioToUrl", () => {
   });
 });
 
-describe("fetchPersonas", () => {
-  it("returns the parsed persona list on success", async () => {
-    const personas = [{ id: "jazz", name: "Jazz", description: "d", greeting: "g" }];
+describe("fetchTemplates", () => {
+  it("returns the parsed template list on success", async () => {
+    const templates = [{ name: "Jazz", details: "..." }];
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, json: async () => personas })
+      vi.fn().mockResolvedValue({ ok: true, json: async () => templates })
     );
-    await expect(fetchPersonas()).resolves.toEqual(personas);
+    await expect(fetchTemplates()).resolves.toEqual(templates);
   });
 
   it("throws the server-provided error message on failure", async () => {
@@ -40,12 +40,12 @@ describe("fetchPersonas", () => {
         json: async () => ({ detail: { message: "Groq is not configured." } }),
       })
     );
-    await expect(fetchPersonas()).rejects.toThrow("Groq is not configured.");
+    await expect(fetchTemplates()).rejects.toThrow("Groq is not configured.");
   });
 });
 
 describe("sendTurn", () => {
-  it("posts a multipart form with persona, history, and the audio clip", async () => {
+  it("posts a multipart form with the company profile, history, and the audio clip", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ user_text: "hi", reply_text: "hello", reply_audio_base64: "", language: "en-US" }),
@@ -53,14 +53,16 @@ describe("sendTurn", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const clip = new Blob(["audio-bytes"], { type: "audio/webm" });
-    const result = await sendTurn("jazz", clip, [{ role: "user", content: "earlier" }]);
+    const company = { companyName: "Acme Widgets", companyDetails: "Sells widgets." };
+    const result = await sendTurn(company, clip, [{ role: "user", content: "earlier" }]);
 
     expect(result.reply_text).toBe("hello");
     expect(result.language).toBe("en-US");
     const [url, options] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("/api/voice/turn");
     const form = options.body as FormData;
-    expect(form.get("persona")).toBe("jazz");
+    expect(form.get("company_name")).toBe("Acme Widgets");
+    expect(form.get("company_details")).toBe("Sells widgets.");
     expect(JSON.parse(form.get("history") as string)).toEqual([{ role: "user", content: "earlier" }]);
     expect(form.get("audio")).toBeInstanceOf(Blob);
   });

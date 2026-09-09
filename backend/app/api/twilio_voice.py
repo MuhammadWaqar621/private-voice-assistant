@@ -1,17 +1,22 @@
 """
 Real-phone-call endpoints for Twilio Voice. Point a Twilio phone number's
 "A call comes in" webhook at POST {your public URL}/api/twilio/voice and
-anyone who dials that number talks to the same persona/Groq pipeline the
-browser demo uses (app/api/voice.py) - just reached over the phone
-network instead of a browser tab.
+anyone who dials that number talks to the same company-profile/Groq
+pipeline the browser demo uses (app/api/voice.py, app/company_profile.py)
+- just reached over the phone network instead of a browser tab. Since a
+phone call has no setup form to fill in like the browser flow does, which
+company this number represents is fixed via the TWILIO_COMPANY_NAME /
+TWILIO_COMPANY_DETAILS env vars (see backend/.env.example) - one number,
+one company, set once when you configure the number.
 
 How a call flows through this file:
   1. Twilio POSTs to /voice when the call connects. We reply with TwiML
-     that plays the persona's greeting and opens a <Gather> to listen.
+     that plays the configured company's greeting and opens a <Gather>
+     to listen.
   2. Twilio does its own speech-to-text on what the caller says (Twilio's
      built-in recognizer, not Groq Whisper - see the module-level note
      below on why) and POSTs the transcript to /gather.
-  3. /gather runs that transcript through the same persona-grounded Groq
+  3. /gather runs that transcript through the same company-grounded Groq
      LLM as the browser flow, synthesizes the reply with Groq TTS, and
      replies with TwiML that plays it and re-opens <Gather> for the next
      turn - repeating until the caller hangs up.
@@ -44,21 +49,24 @@ import uuid
 
 from fastapi import APIRouter, Form, HTTPException, Response
 
+from app.company_profile import build_system_prompt, default_greeting
 from app.conversation_store import append_turn, cache_audio, clear_call, get_audio, get_history
 from app.groq_client import chat_reply, synthesize_speech
-from app.personas import Persona, get_persona
 
 router = APIRouter(prefix="/api/twilio", tags=["twilio"])
 
 _ENDED_CALL_STATUSES = {"completed", "failed", "busy", "no-answer", "canceled"}
 
 
-def _persona_for_call() -> Persona:
-    """One Twilio number maps to one persona for this demo (configurable
-    via TWILIO_DEFAULT_PERSONA) - a production system would look this up
-    by the `To` number Twilio sends, for a pool of numbers/companies."""
-    persona_id = os.getenv("TWILIO_DEFAULT_PERSONA", "jazz").strip() or "jazz"
-    return get_persona(persona_id) or get_persona("jazz")  # type: ignore[return-value]
+def _company_for_call() -> tuple[str, str]:
+    """One Twilio number maps to one company for this demo (configured via
+    TWILIO_COMPANY_NAME / TWILIO_COMPANY_DETAILS - see
+    backend/.env.example) - a production system with a pool of numbers
+    would look this up by the `To` number Twilio sends instead of a
+    single fixed pair of env vars."""
+    name = os.getenv("TWILIO_COMPANY_NAME", "").strip() or "This company"
+    details = os.getenv("TWILIO_COMPANY_DETAILS", "").strip()
+    return name, details
 
 
 def _twiml_response(xml: str) -> Response:
@@ -99,20 +107,21 @@ def _cache_and_url(request_base_url: str, audio_bytes: bytes) -> str:
 
 @router.post("/voice")
 async def incoming_call() -> Response:
-    """Twilio's "a call comes in" webhook - answers with the persona's
-    greeting and starts listening for the caller's first turn."""
-    persona = _persona_for_call()
+    """Twilio's "a call comes in" webhook - answers with the configured
+    company's greeting and starts listening for the caller's first turn."""
+    company_name, _ = _company_for_call()
+    greeting = default_greeting(company_name)
     audio_url = None
     try:
         # Not routed through app.main's greeting cache (that stores
         # browser-flow base64 JSON, not a fetchable URL Twilio can <Play>)
         # - a real deployment could share a cache keyed the same way;
         # skipped here to keep this module's scope to the call flow itself.
-        audio_bytes = synthesize_speech(persona.greeting)
+        audio_bytes = synthesize_speech(greeting)
         audio_url = _cache_and_url(_public_base_url(), audio_bytes)
     except Exception:  # noqa: BLE001 - fall back to Twilio's own voice below
         pass
-    return _twiml_response(_speak_and_gather_twiml(audio_url, persona.greeting))
+    return _twiml_response(_speak_and_gather_twiml(audio_url, greeting))
 
 
 @router.post("/gather")
@@ -122,9 +131,9 @@ async def gather_result(
 ) -> Response:
     """Twilio's <Gather> callback: SpeechResult is the transcript from
     Twilio's own speech recognition (see module docstring for why this
-    isn't Groq Whisper here). Runs it through the same persona-grounded
+    isn't Groq Whisper here). Runs it through the same company-grounded
     Groq LLM + TTS as the browser flow and keeps the call going."""
-    persona = _persona_for_call()
+    company_name, company_details = _company_for_call()
 
     if not SpeechResult.strip():
         return _twiml_response(
@@ -138,7 +147,7 @@ async def gather_result(
         )
 
     history = get_history(CallSid)
-    messages = [{"role": "system", "content": persona.system_prompt}]
+    messages = [{"role": "system", "content": build_system_prompt(company_name, company_details)}]
     messages.extend(history)
     messages.append({"role": "user", "content": SpeechResult})
 

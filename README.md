@@ -1,9 +1,12 @@
 # Private Voice Assistant
 
-An AI-powered voice helpline — the kind of assistant a telecom (Jazz) or a
-bank could put in front of an IVR: the caller speaks, the assistant
+An AI-powered voice helpline for **any** business - a telecom, a bank, an
+airline, a bakery, whatever you type in: the caller speaks, the assistant
 listens, understands, and answers back out loud, grounded in that
-company's own facts, in whatever language the caller used.
+company's own facts, in whatever language the caller used. There's no
+fixed list of supported companies - a setup step (a company name plus a
+free-text description of the business) is all it takes to point the same
+assistant at a new one.
 
 Two ways to reach it:
 
@@ -29,7 +32,7 @@ flowchart LR
     Phone -->|"POST /api/twilio/voice, /gather"| API
 
     API --> STT["Groq Whisper (STT)\n+ detected language"]
-    STT --> LLM["Groq LLM\npersona-grounded reply"]
+    STT --> LLM["Groq LLM\ncompany-grounded reply"]
     LLM --> TTS["Groq Orpheus (TTS)\nEnglish replies only"]
 
     TTS -->|"audio"| BrowserOut["Browser <audio>"]
@@ -42,10 +45,12 @@ flowchart LR
 1. **Listen** — speech goes to Groq's **Whisper** model, which returns
    both the transcript and the detected language.
 2. **Think** — the transcript, conversation so far, and detected
-   language go to a **Groq-hosted LLM** with a system prompt for whichever
-   company persona is active (see `backend/app/personas.py`). The persona
-   stays in scope, never invents real account data, replies in the
-   caller's own language, and offers a human handoff when it can't help.
+   language go to a **Groq-hosted LLM** with a system prompt built from
+   whatever company is configured for this session - a name and a
+   free-text description (see `backend/app/company_profile.py`). The
+   assistant stays in scope, never invents real account data, replies in
+   the caller's own language, and offers a human handoff when it can't
+   help - regardless of which company it's set up for.
 3. **Speak** — English replies go to Groq's **Orpheus** TTS model
    (Orpheus is English-only). Non-English replies, or any Groq TTS
    failure, fall back to the browser's built-in voice (or Twilio's
@@ -60,7 +65,7 @@ since a phone call has no tab to hold it in.
 ## Project layout
 
 ```
-backend/    FastAPI app (Groq STT/LLM/TTS wrapper, persona config, browser + Twilio APIs)
+backend/    FastAPI app (Groq STT/LLM/TTS wrapper, company-profile builder, browser + Twilio APIs)
 frontend/   React + TypeScript call UI (Vite) - the browser demo only
 ```
 
@@ -100,10 +105,12 @@ npm run dev
 
 Open **http://localhost:5180** (pinned in `vite.config.ts` - not Vite's
 default 5173, which collides with another project on this machine; see
-"Why port 5180" below). Pick a persona, press **Call**, then hold **Hold
-to talk** while you speak and release to send. Speak in any supported
-language (see [Multilingual replies](#multilingual-replies)) and the
-reply comes back in that same language.
+"Why port 5180" below). Type in a company name and a description of the
+business (or click one of the quick-fill example buttons), press
+**Continue**, then **Call**, then hold **Hold to talk** while you speak
+and release to send. Speak in any supported language (see
+[Multilingual replies](#multilingual-replies)) and the reply comes back
+in that same language.
 
 No Node.js installed? Run the frontend via Docker instead:
 
@@ -122,11 +129,16 @@ Backend on `:8010`, frontend on `:4180`.
 ## Real phone calls (Twilio)
 
 This lets someone dial an actual phone number and talk to the same
-persona pipeline the browser demo uses - `backend/app/api/twilio_voice.py`
-handles it. **This requires your own Twilio account and cannot be
-verified without one** - what's been tested here is that the webhook
-endpoints return correct TwiML for requests shaped exactly like Twilio's
-(see `backend/tests/test_twilio_voice.py`), not an actual live call.
+company-profile pipeline the browser demo uses -
+`backend/app/api/twilio_voice.py` handles it. A phone call has no setup
+form to fill in like the browser flow does, so which company a Twilio
+number represents is fixed via `TWILIO_COMPANY_NAME` /
+`TWILIO_COMPANY_DETAILS` in `backend/.env` - one number, one company,
+same idea as the browser form, just set once instead of per-visitor.
+**This requires your own Twilio account and cannot be verified without
+one** - what's been tested here is that the webhook endpoints return
+correct TwiML for requests shaped exactly like Twilio's (see
+`backend/tests/test_twilio_voice.py`), not an actual live call.
 
 1. **Create a Twilio account** at twilio.com (a free trial account works
    - inbound calls to your own Twilio number work fine on a trial,
@@ -139,22 +151,24 @@ endpoints return correct TwiML for requests shaped exactly like Twilio's
    ngrok http 8010
    ```
    Copy the `https://*.ngrok-free.app` URL it prints.
-4. **Set `PUBLIC_BASE_URL`** in `backend/.env` to that ngrok URL, and set
-   `TWILIO_DEFAULT_PERSONA` to whichever persona should answer (`jazz` or
-   `bank`). Restart the backend so it picks up the new `.env` values.
+4. **Set `PUBLIC_BASE_URL`, `TWILIO_COMPANY_NAME`, and
+   `TWILIO_COMPANY_DETAILS`** in `backend/.env` (the ngrok URL, and
+   whichever company should answer this number - any company works, not
+   just the two example templates). Restart the backend so it picks up
+   the new `.env` values.
 5. **Point the phone number's webhook at your backend**: in the Twilio
    console, open the number's configuration, and under "A call comes in"
    set the webhook to `https://<your-ngrok-url>/api/twilio/voice`
    (HTTP POST).
-6. **Call the number.** It should answer with the persona's greeting and
-   respond to what you say, turn by turn, using the same Groq pipeline as
-   the browser demo - just with Twilio's own speech recognition instead
-   of Groq Whisper for the caller's side (see the module docstring in
-   `twilio_voice.py` for why: Twilio only exposes raw call audio via a
-   WebSocket media stream, which would need real-time buffering and
-   transcoding to hand to Whisper - a larger undertaking than this
-   demo covers, and Twilio's `<Gather input="speech">` already does
-   speech-to-text and simply hands back the transcript).
+6. **Call the number.** It should answer with the configured company's
+   greeting and respond to what you say, turn by turn, using the same
+   Groq pipeline as the browser demo - just with Twilio's own speech
+   recognition instead of Groq Whisper for the caller's side (see the
+   module docstring in `twilio_voice.py` for why: Twilio only exposes raw
+   call audio via a WebSocket media stream, which would need real-time
+   buffering and transcoding to hand to Whisper - a larger undertaking
+   than this demo covers, and Twilio's `<Gather input="speech">` already
+   does speech-to-text and simply hands back the transcript).
 
 Every ngrok restart gives you a new URL (unless you're on a paid ngrok
 plan) - update both `PUBLIC_BASE_URL` and the Twilio console webhook each
@@ -181,7 +195,7 @@ than something drifting silently.
 
 Whisper detects the language of what the caller said; that detected
 language is embedded directly in the message sent to the LLM (e.g.
-`[Reply only in Urdu.] <transcript>`), and the persona's own system
+`[Reply only in Urdu.] <transcript>`), and the system
 prompt also instructs it to match the caller's language. This is
 probabilistic, not guaranteed - the smaller/faster model used for low
 latency (see below) complies the large majority of the time but not
@@ -222,10 +236,10 @@ Two things specifically keep this from feeling slower than that:
 - **Startup warm-up** (`app/main.py`'s `_warm_up_groq`): the very first
   request after a cold server start pays an extra few seconds for Groq's
   TLS/connection setup on top of normal latency. The backend pre-opens
-  that connection and pre-synthesizes each persona's greeting at startup
+  that connection and pre-synthesizes each example template's greeting at startup
   (in a background thread, so it doesn't delay the server coming up), so
   a real user's first "Call" press never pays that cost.
-- **Cached greetings** (`app/conversation_store.py`): a persona's opening
+- **Cached greetings** (`app/conversation_store.py`): a company's opening
   line is static text, so it's synthesized once (at the startup warm-up
   above) and reused - pressing "Call" is a cache hit, not a fresh Groq
   call, so the assistant "picks up" instantly.
@@ -233,18 +247,23 @@ Two things specifically keep this from feeling slower than that:
 Faster models are used deliberately even at some quality cost:
 `whisper-large-v3-turbo` for STT and `openai/gpt-oss-20b` for the LLM
 (instead of Groq's larger, slower model of each), with replies capped at
-120 tokens - personas are instructed to reply in 1-3 short sentences
+120 tokens - the assistant is instructed to reply in 1-3 short sentences
 anyway, so a low cap doesn't cut off real content, it just stops the
 model from padding out a slow, long answer that's slower than 1-3
 sentences would be regardless.
 
-## Adding a new company persona
+## Setting up a company
 
-Add an entry to `PERSONAS` in `backend/app/personas.py`: an id, a display
-name, a short description, an opening greeting, and a block of "knowledge"
-facts the assistant may rely on. Nothing else needs to change - the
-frontend's persona dropdown, the `/api/voice/*` endpoints, and
-`TWILIO_DEFAULT_PERSONA` all look personas up by id automatically.
+The browser demo's setup form takes a company name and a free-text
+description - there's no fixed list to extend, any company works (see
+`backend/app/company_profile.py`'s `build_system_prompt()`, which turns
+that name/description straight into the assistant's system prompt). The
+two "quick-fill" buttons on the setup form (`EXAMPLE_TEMPLATES` in that
+same file) are just convenience starting points, not special-cased
+anywhere else - add, remove, or edit them freely without touching any
+other code. For real Twilio calls, the equivalent config is
+`TWILIO_COMPANY_NAME` / `TWILIO_COMPANY_DETAILS` in `backend/.env` (see
+[Real phone calls (Twilio)](#real-phone-calls-twilio) above).
 
 ## Testing
 
@@ -288,6 +307,6 @@ npm run build     # type-checks and production-builds the app
   each other or the AI's voice starting before it's finished "thinking."
   Groq's inference is fast enough (see Latency above) that this still
   feels close to real-time for a request/response design.
-- **No real account data, ever.** Personas are explicitly instructed to
+- **No real account data, ever.** The assistant is explicitly instructed to
   never fabricate balances, transactions, or personal data, and to offer
   a human handoff for anything requiring identity verification.

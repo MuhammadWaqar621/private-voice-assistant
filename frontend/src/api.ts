@@ -1,8 +1,11 @@
-export interface Persona {
-  id: string;
+export interface CompanyProfile {
+  companyName: string;
+  companyDetails: string;
+}
+
+export interface ExampleTemplate {
   name: string;
-  description: string;
-  greeting: string;
+  details: string;
 }
 
 export interface ChatTurn {
@@ -37,25 +40,33 @@ async function parseErrorDetail(resp: Response): Promise<string> {
   return `Request failed (${resp.status})`;
 }
 
-export async function fetchPersonas(): Promise<Persona[]> {
-  const resp = await fetch(`${BASE_URL}/api/voice/personas`);
+/** Optional quick-fill starting points for the setup form - any company
+ * name/details a visitor types in works just as well; these just save a
+ * first-time visitor from starting on a blank form. */
+export async function fetchTemplates(): Promise<ExampleTemplate[]> {
+  const resp = await fetch(`${BASE_URL}/api/voice/templates`);
   if (!resp.ok) throw new Error(await parseErrorDetail(resp));
   return resp.json();
 }
 
-export async function fetchGreeting(personaId: string): Promise<GreetingResult> {
-  const resp = await fetch(`${BASE_URL}/api/voice/greeting/${personaId}`);
+export async function fetchGreeting(company: CompanyProfile): Promise<GreetingResult> {
+  const params = new URLSearchParams({
+    company_name: company.companyName,
+    company_details: company.companyDetails,
+  });
+  const resp = await fetch(`${BASE_URL}/api/voice/greeting?${params}`);
   if (!resp.ok) throw new Error(await parseErrorDetail(resp));
   return resp.json();
 }
 
 export async function sendTurn(
-  personaId: string,
+  company: CompanyProfile,
   audio: Blob,
   history: ChatTurn[]
 ): Promise<TurnResult> {
   const form = new FormData();
-  form.append("persona", personaId);
+  form.append("company_name", company.companyName);
+  form.append("company_details", company.companyDetails);
   form.append("history", JSON.stringify(history));
   form.append("audio", audio, "clip.webm");
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { base64AudioToUrl, fetchPersonas, sendTurn } from "./api";
+import { base64AudioToUrl, fetchPersonas, sendTurn, speakWithBrowserVoice } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -48,7 +48,7 @@ describe("sendTurn", () => {
   it("posts a multipart form with persona, history, and the audio clip", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ user_text: "hi", reply_text: "hello", reply_audio_base64: "" }),
+      json: async () => ({ user_text: "hi", reply_text: "hello", reply_audio_base64: "", language: "en-US" }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -56,11 +56,39 @@ describe("sendTurn", () => {
     const result = await sendTurn("jazz", clip, [{ role: "user", content: "earlier" }]);
 
     expect(result.reply_text).toBe("hello");
+    expect(result.language).toBe("en-US");
     const [url, options] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("/api/voice/turn");
     const form = options.body as FormData;
     expect(form.get("persona")).toBe("jazz");
     expect(JSON.parse(form.get("history") as string)).toEqual([{ role: "user", content: "earlier" }]);
     expect(form.get("audio")).toBeInstanceOf(Blob);
+  });
+});
+
+describe("speakWithBrowserVoice", () => {
+  it("sets the utterance's language so non-English text isn't mispronounced", () => {
+    // jsdom implements neither SpeechSynthesisUtterance nor
+    // speechSynthesis - stub a minimal fake of each so the assertion can
+    // inspect what speakWithBrowserVoice actually constructs and passes
+    // to speak(), the same way base64AudioToUrl's test stubs createObjectURL.
+    class FakeUtterance {
+      lang = "";
+      rate = 1;
+      constructor(public text: string) {}
+    }
+    vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
+
+    const spoken: FakeUtterance[] = [];
+    vi.stubGlobal("speechSynthesis", {
+      cancel: vi.fn(),
+      speak: vi.fn((u: FakeUtterance) => spoken.push(u)),
+    });
+
+    speakWithBrowserVoice("Yeh Urdu jawab hai.", "ur-PK");
+
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0].lang).toBe("ur-PK");
+    expect(spoken[0].text).toBe("Yeh Urdu jawab hai.");
   });
 });

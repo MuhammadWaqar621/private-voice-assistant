@@ -15,6 +15,7 @@ Env vars:
 """
 
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
@@ -22,10 +23,10 @@ from openai import OpenAI
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-DEFAULT_STT_MODEL = "whisper-large-v3"
+DEFAULT_STT_MODEL = "whisper-large-v3-turbo"  # turbo trades a little accuracy for much lower latency
 DEFAULT_TTS_MODEL = "canopylabs/orpheus-v1-english"
 DEFAULT_TTS_VOICE = "troy"
-DEFAULT_LLM_MODEL = "openai/gpt-oss-120b"
+DEFAULT_LLM_MODEL = "openai/gpt-oss-20b"  # smaller/faster than -120b; persona replies are short anyway
 
 # Hard cap on how much text synthesize_speech() will send to Groq per call -
 # bounds cost/latency on a very long assistant reply. Callers may pass
@@ -57,19 +58,35 @@ def get_groq_client() -> OpenAI:
     return OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
 
 
-def transcribe_audio(audio_bytes: bytes, filename: str) -> str:
-    """Speech-to-text via Groq's Whisper endpoint. Raises on any API
-    failure - callers translate that into a clear HTTP error."""
+@dataclass(frozen=True)
+class Transcript:
+    text: str
+    language: str  # e.g. "English", "Urdu" - Whisper's own detected-language name
+
+
+def transcribe_audio(audio_bytes: bytes, filename: str) -> Transcript:
+    """Speech-to-text via Groq's Whisper endpoint. Requests verbose_json
+    (rather than the default plain-text response) specifically to get
+    Whisper's own language detection back too - app/api/voice.py uses it
+    so the assistant replies in the same language the caller spoke,
+    rather than always answering in English regardless of input. Raises
+    on any API failure - callers translate that into a clear HTTP error."""
     client = get_groq_client()
     model = _clean(os.getenv("GROQ_STT_MODEL")) or DEFAULT_STT_MODEL
-    response = client.audio.transcriptions.create(model=model, file=(filename, audio_bytes))
-    return response.text
+    response = client.audio.transcriptions.create(
+        model=model,
+        file=(filename, audio_bytes),
+        response_format="verbose_json",
+    )
+    return Transcript(text=response.text, language=response.language)
 
 
 def synthesize_speech(text: str) -> bytes:
-    """Text-to-speech via Groq's PlayAI TTS endpoint, returning raw MP3
-    bytes. `text` is capped at _TTS_MAX_CHARS characters before being
-    sent, to bound cost/latency on a very long assistant reply."""
+    """Text-to-speech via Groq's Orpheus TTS endpoint, returning raw WAV
+    bytes (Orpheus only supports response_format="wav", unlike the
+    decommissioned playai-tts which returned mp3). `text` is capped at
+    _TTS_MAX_CHARS characters before being sent, to bound cost/latency on
+    a very long assistant reply."""
     client = get_groq_client()
     model = _clean(os.getenv("GROQ_TTS_MODEL")) or DEFAULT_TTS_MODEL
     voice = _clean(os.getenv("GROQ_TTS_VOICE")) or DEFAULT_TTS_VOICE
@@ -77,7 +94,7 @@ def synthesize_speech(text: str) -> bytes:
         model=model,
         voice=voice,
         input=text[:_TTS_MAX_CHARS],
-        response_format="mp3",
+        response_format="wav",
     )
     return response.read()
 
@@ -85,13 +102,16 @@ def synthesize_speech(text: str) -> bytes:
 def chat_reply(messages: list[dict]) -> str:
     """One chat-completion turn via Groq's Llama/GPT-OSS models.
     `messages` is the standard OpenAI chat list ([{role, content}, ...]),
-    system prompt included by the caller (see app/personas.py)."""
+    system prompt included by the caller (see app/personas.py). max_tokens
+    is capped at 120 - personas are instructed to reply in 1-3 short
+    sentences (see app/personas.py's _BASE_RULES), and a lower cap also
+    means the model physically cannot ramble into a slow, long reply."""
     client = get_groq_client()
     model = _clean(os.getenv("GROQ_LLM_MODEL")) or DEFAULT_LLM_MODEL
     response = client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=0.4,
-        max_tokens=300,
+        max_tokens=120,
     )
     return response.choices[0].message.content or ""

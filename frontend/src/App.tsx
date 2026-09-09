@@ -30,13 +30,13 @@ export default function App() {
       .catch((e) => setError(e.message));
   }, []);
 
-  function playOrSpeak(audioBase64: string, text: string) {
+  function playOrSpeak(audioBase64: string, text: string, lang: string) {
     const url = base64AudioToUrl(audioBase64);
     if (url && audioRef.current) {
       audioRef.current.src = url;
       void audioRef.current.play();
     } else {
-      speakWithBrowserVoice(text);
+      speakWithBrowserVoice(text, lang);
     }
   }
 
@@ -47,7 +47,7 @@ export default function App() {
     try {
       const greeting = await fetchGreeting(personaId);
       setHistory([{ role: "assistant", content: greeting.greeting_text }]);
-      playOrSpeak(greeting.greeting_audio_base64, greeting.greeting_text);
+      playOrSpeak(greeting.greeting_audio_base64, greeting.greeting_text, greeting.language);
       setCallState("connected");
     } catch (e) {
       setError((e as Error).message);
@@ -80,7 +80,7 @@ export default function App() {
         { role: "assistant", content: result.reply_text },
       ];
       setHistory(nextHistory);
-      playOrSpeak(result.reply_audio_base64, result.reply_text);
+      playOrSpeak(result.reply_audio_base64, result.reply_text, result.language);
     } catch (e) {
       setError((e as Error).message);
     } finally {

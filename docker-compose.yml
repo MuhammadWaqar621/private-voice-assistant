@@ -2,7 +2,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "8010:8010"
     env_file:
       - ./backend/.env
 
@@ -10,8 +10,8 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_BASE_URL: http://localhost:8000
+        VITE_API_BASE_URL: http://localhost:8010
     ports:
-      - "4173:4173"
+      - "4180:4180"
     depends_on:
       - backend

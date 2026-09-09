@@ -14,14 +14,16 @@ export interface TurnResult {
   user_text: string;
   reply_text: string;
   reply_audio_base64: string;
+  language: string; // BCP-47 tag (e.g. "ur-PK") for the browser-voice fallback
 }
 
 export interface GreetingResult {
   greeting_text: string;
   greeting_audio_base64: string;
+  language: string;
 }
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8010";
 
 async function parseErrorDetail(resp: Response): Promise<string> {
   try {
@@ -62,25 +64,31 @@ export async function sendTurn(
   return resp.json();
 }
 
-/** Decodes a base64 mp3/wav clip into a playable object URL, or null when
- * the server had no audio (caller falls back to speakWithBrowserVoice). */
+/** Decodes a base64 WAV clip (Groq's Orpheus TTS only supports wav output)
+ * into a playable object URL, or null when the server had no audio
+ * (caller falls back to speakWithBrowserVoice). */
 export function base64AudioToUrl(base64: string): string | null {
   if (!base64) return null;
   const bytes = atob(base64);
   const buffer = new Uint8Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-  const blob = new Blob([buffer], { type: "audio/mpeg" });
+  const blob = new Blob([buffer], { type: "audio/wav" });
   return URL.createObjectURL(blob);
 }
 
-/** Fallback voice when Groq TTS isn't available server-side (see backend
- * README: Orpheus requires one-time terms acceptance in the Groq console).
- * Every modern desktop browser ships a speechSynthesis voice, so the call
- * still "speaks" without any extra setup. */
-export function speakWithBrowserVoice(text: string): void {
+/** Fallback voice for whenever the server sends no audio - either Groq TTS
+ * isn't available (see backend README: Orpheus requires one-time terms
+ * acceptance in the Groq console), or the reply is in a language Orpheus
+ * doesn't support (it's English-only; the backend only attempts Groq TTS
+ * for English replies - see backend/app/api/voice.py's _try_synthesize).
+ * `lang` (a BCP-47 tag from the API response) picks a matching voice/
+ * pronunciation so a non-English reply isn't read with an English accent
+ * or skipped by browsers that need an exact voice match. */
+export function speakWithBrowserVoice(text: string, lang: string): void {
   if (!("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang;
   utterance.rate = 1.0;
   window.speechSynthesis.speak(utterance);
 }

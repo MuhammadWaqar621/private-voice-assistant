@@ -5,16 +5,18 @@ and require network + GROQ_API_KEY, so they're marked `integration` and
 skipped automatically when the key isn't set (see tests/conftest.py).
 
 TTS specifically depends on Groq's Orpheus model, which requires a
-one-time terms acceptance in the Groq console (see backend/.env.example).
-Until that's done, Groq raises model_terms_required - the TTS tests below
-detect that specific error and skip with a clear message rather than
-failing, since it's a manual step outside this codebase.
+one-time terms acceptance in the Groq console (see backend/.env.example)
+and has a modest free-tier daily token quota. Either condition surfaces
+as an OpenAI SDK error with a distinct `code` - the TTS tests below detect
+those specific codes and skip with a clear message rather than failing,
+since neither is a bug in this codebase (one's a manual one-time step,
+the other resets the next day / with a paid tier).
 """
 
 from pathlib import Path
 
 import pytest
-from openai import BadRequestError
+from openai import APIStatusError
 
 from app.groq_client import chat_reply, synthesize_speech, transcribe_audio
 from app.personas import get_persona
@@ -24,19 +26,21 @@ pytestmark = [pytest.mark.integration, requires_groq]
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+_SKIPPABLE_TTS_ERROR_CODES = {
+    "model_terms_required",  # one-time terms acceptance not done yet - see backend/.env.example
+    "model_decommissioned",  # Groq retired the configured GROQ_TTS_MODEL
+    "rate_limit_exceeded",  # free-tier daily token quota hit - resets daily / with a paid tier
+}
+
 
 def _synthesize_or_skip(text: str) -> bytes:
     try:
         return synthesize_speech(text)
-    except BadRequestError as exc:
+    except APIStatusError as exc:
         body = getattr(exc, "body", None) or {}
         code = body.get("code") if isinstance(body, dict) else None
-        if code in ("model_terms_required", "model_decommissioned"):
-            pytest.skip(
-                "Groq TTS model needs one-time terms acceptance - see "
-                "backend/.env.example (GROQ_TTS_MODEL). "
-                f"Groq said: {exc}"
-            )
+        if code in _SKIPPABLE_TTS_ERROR_CODES:
+            pytest.skip(f"Groq TTS unavailable right now ({code}), not a code bug. Groq said: {exc}")
         raise
 
 
@@ -52,9 +56,10 @@ def test_tts_then_stt_recovers_recognizable_text():
     transcript = transcribe_audio(audio, "roundtrip.mp3")
     # Whisper won't be byte-perfect, but core words should survive the
     # synthesize -> recognize round trip.
-    lowered = transcript.lower()
+    lowered = transcript.text.lower()
     assert "fox" in lowered
     assert "dog" in lowered
+    assert transcript.language.lower() == "english"
 
 
 def test_stt_transcribes_prerecorded_fixture():
@@ -62,7 +67,8 @@ def test_stt_transcribes_prerecorded_fixture():
     # regardless of whether Groq's TTS model has had its terms accepted.
     audio = (FIXTURES / "balance_question.wav").read_bytes()
     transcript = transcribe_audio(audio, "balance_question.wav")
-    assert "balance" in transcript.lower()
+    assert "balance" in transcript.text.lower()
+    assert transcript.language.lower() == "english"
 
 
 def test_persona_grounded_reply_declines_real_account_data():
@@ -87,3 +93,28 @@ def test_persona_uses_grounded_fact():
     ]
     reply = chat_reply(messages)
     assert "111" in reply  # the *111# short code from the persona's knowledge
+
+
+def test_persona_replies_in_urdu_when_asked_in_urdu():
+    # Mirrors the exact prompt shape app/api/voice.py builds from
+    # Whisper's detected language (there's no real Urdu audio fixture to
+    # drive this through STT, so it's applied directly here) - verifies
+    # the LLM itself actually follows a non-English instruction rather
+    # than defaulting to English regardless of what's asked. Run several
+    # times: a small/fast model doesn't comply with 100% consistency, so
+    # this only fails if it drifts back to English on every attempt.
+    persona = get_persona("jazz")
+    attempts = 3
+    for attempt in range(attempts):
+        messages = [
+            {"role": "system", "content": persona.system_prompt},
+            {"role": "user", "content": "[Reply only in Urdu.] Main apna balance kaise check karoon?"},
+        ]
+        reply = chat_reply(messages)
+        assert reply.strip()
+        # Urdu is written in Arabic-script characters (U+0600-U+06FF) - a
+        # reply using that range confirms it actually replied in Urdu
+        # script, not transliterated/English text.
+        if any("؀" <= ch <= "ۿ" for ch in reply):
+            return
+    raise AssertionError(f"expected Urdu script in at least one of {attempts} attempts, last reply: {reply!r}")

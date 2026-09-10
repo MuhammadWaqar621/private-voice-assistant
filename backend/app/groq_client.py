@@ -15,11 +15,12 @@ Env vars:
 """
 
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
@@ -27,6 +28,28 @@ DEFAULT_STT_MODEL = "whisper-large-v3-turbo"  # turbo trades a little accuracy f
 DEFAULT_TTS_MODEL = "canopylabs/orpheus-v1-english"
 DEFAULT_TTS_VOICE = "troy"
 DEFAULT_LLM_MODEL = "openai/gpt-oss-20b"  # smaller/faster than -120b; persona replies are short anyway
+
+# Groq enforces quota per model, independently - if the primary model's
+# daily/per-minute limit is hit, a different model still has its own
+# untouched budget (confirmed by direct testing against this same Groq
+# account: querynest-website hit gpt-oss-120b's 200k-tokens/day cap while
+# qwen3.8-27b kept succeeding the whole time). chat_reply() below tries
+# these in order on a rate-limit error instead of failing the call.
+#
+# This is our own VETTED order, not "whatever Groq happens to list" -
+# each id here was evaluated for answer quality before being added
+# (gpt-oss-20b hallucinated an unsupported detail in isolated testing on
+# a sibling project's system prompt; qwen3.8-27b didn't). `groq/compound`
+# is deliberately excluded - it runs on top of gpt-oss-120b internally
+# and shares that model's quota rather than having its own.
+#
+# Which of these ids are actually still live gets checked dynamically
+# against Groq's /v1/models (cached, see _live_model_chain()) rather than
+# assumed - Groq does retire/rename models over time.
+_FALLBACK_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+_MODEL_LIST_TTL_SECONDS = 3600
+_model_list_cache: set[str] = set()
+_model_list_cached_at: float = 0.0
 
 # Hard cap on how much text synthesize_speech() will send to Groq per call -
 # bounds cost/latency on a very long assistant reply. Callers may pass
@@ -99,19 +122,57 @@ def synthesize_speech(text: str) -> bytes:
     return response.read()
 
 
+def _live_model_chain(primary: str) -> list[str]:
+    """[primary, *_FALLBACK_MODELS], filtered down to whichever ids Groq
+    actually still serves right now, so a retired/renamed model (this
+    has happened before - see the fallback-chain rationale above) drops
+    out of the chain automatically instead of wasting a call on every
+    single request. Cached for _MODEL_LIST_TTL_SECONDS so this only
+    queries Groq's /v1/models occasionally, not on every chat_reply()."""
+    global _model_list_cache, _model_list_cached_at  # noqa: PLW0603 - simple process-local cache
+
+    vetted = list(dict.fromkeys([primary, *_FALLBACK_MODELS]))  # de-dup, preserve order
+    now = time.monotonic()
+    if not _model_list_cache or (now - _model_list_cached_at) > _MODEL_LIST_TTL_SECONDS:
+        try:
+            live = get_groq_client().models.list()
+            _model_list_cache = {m.id for m in live.data}
+            _model_list_cached_at = now
+        except Exception:  # noqa: BLE001 - listing failed; use whatever we had (or the full vetted list)
+            if not _model_list_cache:
+                return vetted
+
+    chain = [m for m in vetted if m in _model_list_cache]
+    # If the live listing looked empty/wrong somehow, don't strand the
+    # caller with zero models to try.
+    return chain or vetted
+
+
 def chat_reply(messages: list[dict]) -> str:
     """One chat-completion turn via Groq's Llama/GPT-OSS models.
     `messages` is the standard OpenAI chat list ([{role, content}, ...]),
     system prompt included by the caller (see app/personas.py). max_tokens
     is capped at 120 - personas are instructed to reply in 1-3 short
     sentences (see app/personas.py's _BASE_RULES), and a lower cap also
-    means the model physically cannot ramble into a slow, long reply."""
+    means the model physically cannot ramble into a slow, long reply.
+
+    On a rate-limit error, retries against the next model in the fallback
+    chain (see _FALLBACK_MODELS above) instead of failing the call - each
+    model has its own independent Groq quota."""
     client = get_groq_client()
-    model = _clean(os.getenv("GROQ_LLM_MODEL")) or DEFAULT_LLM_MODEL
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.4,
-        max_tokens=120,
-    )
-    return response.choices[0].message.content or ""
+    primary = _clean(os.getenv("GROQ_LLM_MODEL")) or DEFAULT_LLM_MODEL
+
+    last_exc: Optional[Exception] = None
+    for model in _live_model_chain(primary):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.4,
+                max_tokens=120,
+            )
+            return response.choices[0].message.content or ""
+        except RateLimitError as exc:
+            last_exc = exc
+            continue
+    raise last_exc or RuntimeError("No Groq chat model available")

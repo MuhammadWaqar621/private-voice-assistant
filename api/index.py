@@ -22,7 +22,7 @@ from pathlib import Path
 # package lives) is on sys.path regardless of the exact working directory
 # Vercel's builder invokes this file from - mirrors how `uvicorn
 # app.main:app` works when run from the backend/ directory locally.
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "backend"))
 
 from app.main import app  # noqa: E402  (import after the sys.path fix above)
 

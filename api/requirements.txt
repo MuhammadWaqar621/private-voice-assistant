@@ -1,1 +1,15 @@
--r ../backend/requirements.txt
+# Duplicated from ../backend/requirements.txt - Vercel's Python builder
+# doesn't support pip's `-r ../other/requirements.txt` include syntax
+# (tried it, it fails to parse), so this has to be a real copy, not a
+# reference. Keep in sync manually when backend/requirements.txt changes.
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+openai==1.51.0
+python-multipart==0.0.9
+python-dotenv==1.0.1
+pydantic==2.9.2
+twilio==9.11.0
+
+pytest==8.3.3
+httpx==0.27.2

@@ -10,6 +10,27 @@ so /api/twilio/audio/{id} can serve them.
 
 A single process's dict is enough for a demo (one uvicorn worker); this
 is not meant to survive a restart or scale across multiple workers.
+
+Vercel deployment note: this module's correctness depends on every
+request for the same call landing on the same long-lived process - true
+for a single local `uvicorn` worker, NOT guaranteed on Vercel serverless
+functions. Each invocation can be a cold start (fresh, empty dicts) or be
+routed to a different warm instance than a prior request for the same
+CallSid, so on Vercel this cache does not reliably persist across the
+/voice -> /gather -> /gather -> ... turns of one phone call. For the
+stateless browser demo flow (app/api/voice.py) this only costs a
+performance nicety (a warm greeting-cache hit becomes a cache miss, which
+just re-synthesizes - see get_cached_greeting/set_cached_greeting below,
+already written to degrade gracefully on a miss). For the Twilio flow
+(app/api/twilio_voice.py) it is more serious: get_history/append_turn
+losing state mid-call would make the assistant "forget" earlier turns,
+and cache_audio/get_audio losing state would make a TwiML <Play> URL
+Twilio tries to fetch 404 if that GET lands on a different instance than
+the POST that cached it. See twilio_voice.py's module docstring for the
+full Vercel-compatibility note. A production fix would move all three
+caches to an external store (e.g. Vercel KV / Upstash Redis / a small
+database) shared across instances instead of an in-process dict; not done
+here since it's out of scope for making the browser demo deployable.
 """
 
 import time

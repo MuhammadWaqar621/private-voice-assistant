@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -48,11 +49,30 @@ def _warm_up_groq() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Vercel serverless note: this fires warm-up in the background without
+    # awaiting it, same as always, but on Vercel each cold start is a fresh
+    # container/process (see app/conversation_store.py's Vercel note), so
+    # warm-up reruns on every cold start rather than once for the app's
+    # whole lifetime, and may not finish before the container is frozen
+    # between requests. Neither is a correctness problem - it's the same
+    # "best-effort, never fatal" warm-up as local dev, worst case a given
+    # cold instance's first request pays the full latency this was meant
+    # to hide instead of hitting a warm cache.
     asyncio.get_event_loop().run_in_executor(None, _warm_up_groq)
     yield
 
 
 app = FastAPI(title="Private Voice Assistant", version="0.1.0", lifespan=lifespan)
+
+# FRONTEND_ORIGIN: comma-separated exact origins to allow in addition to
+# localhost (e.g. "https://your-app.vercel.app,https://your-domain.com").
+# Needed once frontend and backend are deployed separately - as they are
+# on Vercel, one project per README's "Deploying on Vercel" section - since
+# they then live on different origins and the localhost-only regex below
+# would otherwise silently block every request from the deployed frontend
+# (a fetch() CORS failure, not a 4xx from this server - easy to miss).
+# Left unset, only localhost/127.0.0.1 origins are allowed, same as before.
+_extra_origins = [o.strip() for o in os.getenv("FRONTEND_ORIGIN", "").split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,6 +80,7 @@ app.add_middleware(
     # dev-server port varies (e.g. when a default port is already taken by
     # something else on the machine and Vite/Docker picks another).
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origins=_extra_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

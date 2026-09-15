@@ -66,6 +66,8 @@ since a phone call has no tab to hold it in.
 
 ```
 backend/    FastAPI app (Groq STT/LLM/TTS wrapper, company-profile builder, browser + Twilio APIs)
+  api/index.py    Vercel serverless entry point (re-exports app/main.py's `app`) - see "Deploying on Vercel"
+  vercel.json     Routes every path to api/index.py on Vercel
 frontend/   React + TypeScript call UI (Vite) - the browser demo only
 ```
 
@@ -294,6 +296,74 @@ cd frontend
 npm test          # vitest unit tests for the API client
 npm run build     # type-checks and production-builds the app
 ```
+
+## Deploying on Vercel
+
+The browser demo (frontend + backend) is set up to deploy entirely on
+Vercel, as two separate Vercel projects pointed at the same repo:
+
+- **Backend** - a Python serverless function. Create a Vercel project
+  with **Root Directory** set to `backend/`. `backend/api/index.py`
+  re-exports the existing `app` object from `app/main.py` (Vercel's
+  Python runtime auto-detects an ASGI `app`), and `backend/vercel.json`
+  rewrites every path to that one function, so FastAPI's own routing
+  (all real routes already live under `/api/...`) handles it from there.
+  `backend/requirements.txt` is used as-is; `backend/.python-version`
+  pins the runtime to 3.11 to match local dev. Set these as environment
+  variables in the Vercel project settings (not a `.env` file, which
+  isn't deployed - see `backend/.vercelignore`):
+  - `GROQ_API_KEY` (required)
+  - `GROQ_STT_MODEL` / `GROQ_LLM_MODEL` / `GROQ_TTS_MODEL` /
+    `GROQ_TTS_VOICE` (optional - same defaults as local dev)
+  - `FRONTEND_ORIGIN` - set to the frontend project's deployed URL (e.g.
+    `https://your-app.vercel.app`) once you have it, or the browser demo
+    will fail CORS when the two are on different origins (see
+    `app/main.py`)
+  - Do **not** set `TWILIO_*` / `PUBLIC_BASE_URL` for a Vercel deployment
+    - see "Real phone calls (Twilio) and Vercel" below.
+- **Frontend** - a static Vite build. Create a second Vercel project with
+  **Root Directory** set to `frontend/`; Vercel's zero-config Vite preset
+  builds and serves it with no `vercel.json` needed (there's no
+  client-side router here to add SPA-fallback rewrites for - it's a
+  single page). Set `VITE_API_BASE_URL` in that project's environment
+  variables to the backend project's deployed URL once you have it (e.g.
+  `https://your-backend.vercel.app`) - it isn't hardcoded anywhere.
+
+Deploy the backend first, note its URL, set it as the frontend's
+`VITE_API_BASE_URL` and redeploy the frontend; then set the frontend's URL
+as the backend's `FRONTEND_ORIGIN` and redeploy the backend - the two
+projects' URLs feed into each other once, in either order.
+
+This is code/config preparation only - nothing above required actually
+running a Vercel deployment to write, and none was performed.
+
+### Real phone calls (Twilio) and Vercel
+
+**The Twilio real-phone-call path cannot run on Vercel.** Not because of
+a WebSocket in this app's own code - it deliberately doesn't use one (see
+`app/api/twilio_voice.py`'s module docstring): it uses Twilio's
+`<Gather input="speech">` webhook flow, which is plain HTTP POST/GET, not
+Twilio Media Streams (Twilio's WebSocket-based raw-audio alternative,
+which genuinely cannot run on serverless - a WebSocket needs a connection
+held open for the whole call, and a Vercel function is torn down between
+invocations). The actual blocker is simpler but just as fatal in practice:
+`app/conversation_store.py` keeps per-call state (conversation history,
+and the synthesized-audio bytes a TwiML `<Play>` needs to fetch a moment
+later) in a plain in-process dict. That's fine for one long-lived
+`uvicorn`/Docker process, but Vercel may cold-start a fresh instance or
+route to a different warm one for each of a call's several separate
+webhook requests (`/voice`, then one `/gather` per turn, then `/status`)
+- so the history can silently reset mid-call, and worse, the `<Play>` URL
+this router hands back can 404 when Twilio's servers fetch it from a
+different instance than the one that cached the audio. Making Twilio work
+on Vercel would need that shared state moved to an external store (Vercel
+KV, Upstash Redis, a small database) reachable from every instance - not
+done here, since it's out of scope for making the browser demo
+deployable. If you want real phone calls, run the backend as a normal
+long-lived process instead (`uvicorn`/Docker per the Setup section above,
+on any host that keeps one process running - a VM, Fly.io, Render,
+etc.) - the browser demo and Twilio path share the same backend code, so
+nothing needs to change to support both, just where the process runs.
 
 ## Design notes / limitations
 

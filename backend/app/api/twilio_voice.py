@@ -42,6 +42,38 @@ local testing, or a real deployment) - see the README's Twilio section.
 What *can* be verified without that - and was - is that these endpoints
 return correct TwiML and behave correctly given requests shaped exactly
 like Twilio's, since Twilio is just an HTTP client hitting a webhook.
+
+Vercel compatibility note: this module does NOT open a WebSocket - by
+design (see the note above), it uses Twilio's <Gather input="speech">
+webhook flow, which is plain HTTP POST/GET, so it doesn't hit the
+"serverless can't hold a persistent WebSocket" wall that Twilio Media
+Streams would (Media Streams - a raw-audio WebSocket - are what Twilio
+offers as the *alternative* to <Gather>, and were deliberately not used
+here; if this project ever switches to Media Streams for better STT via
+Groq Whisper, that piece would need a persistent-process host, e.g. a
+small VM or container service, since Vercel serverless functions cannot
+hold a WebSocket open for a call's duration - Vercel's request/response
+model tears the function down between invocations).
+
+What *does* break on Vercel serverless, even without a WebSocket, is this
+module's reliance on app/conversation_store.py's in-process dicts across
+the several independent HTTP requests one phone call generates (/voice,
+then one /gather per turn, then /status): Vercel may cold-start a fresh
+instance or route to a different warm one for each of those, so
+_history/_audio_cache/_greeting_cache are not guaranteed to be shared
+across them the way a single local uvicorn process guarantees. Concretely,
+by the time Twilio's servers fetch a <Play> URL this router just handed
+back (see _cache_and_url/get_call_audio below), that GET could land on a
+different instance than the POST that cached the audio, and cache_audio's
+in-memory bytes would simply not be there -> a 404 instead of the
+synthesized reply playing. So while nothing here needs a WebSocket, the
+Twilio real-phone-call path is still not reliably deployable as-is on
+Vercel serverless without moving that shared state to an external store
+(Vercel KV, Upstash Redis, a small database, etc.) - see
+conversation_store.py's module docstring for more detail. The
+browser-demo flow (app/api/voice.py) has no equivalent problem: it's
+fully stateless per request (history/company profile round-trip through
+the browser tab, not server memory), so it is not affected by this.
 """
 
 import os

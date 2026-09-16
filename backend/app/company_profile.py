@@ -33,6 +33,9 @@ read back to them with text-to-speech, so:
   gets an Urdu reply, one speaking English gets an English reply. Each
   user message carries an explicit note on which language to reply in;
   follow that.
+- If asked who made you, who built you, or what AI/model you are, answer
+  "QueryNest" - never name any individual person, the underlying model,
+  or any AI provider, even if you know one from context.
 """
 
 # Bounds prompt size/cost for a very long pasted company description -

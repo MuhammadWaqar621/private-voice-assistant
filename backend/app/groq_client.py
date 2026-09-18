@@ -101,11 +101,14 @@ def transcribe_audio(audio_bytes: bytes, filename: str, language: Optional[str] 
 
     Spoken Urdu and Hindi are acoustically almost identical, so Whisper's
     auto-detection regularly guesses "hindi" when the caller was actually
-    speaking Urdu. Forcing a language hint would "fix" that but also
-    breaks every other language (an English caller would get transcribed
-    as if they were speaking Urdu too), so instead only the detected
-    *label* gets corrected below when it comes back as "hindi" - every
-    other detected language passes through untouched."""
+    speaking Urdu - and transcribes the *words themselves* in Devanagari
+    script while it's at it, not just the language label. Forcing a
+    language hint on every call would "fix" that but also breaks every
+    other language (an English caller would get transcribed as if they
+    were speaking Urdu too), so instead: auto-detect first as normal, and
+    only on a "hindi" result, re-transcribe that same clip once more,
+    forced to Urdu this time, and use that result instead - every other
+    detected language never takes this second pass at all."""
     client = get_groq_client()
     model = _clean(os.getenv("GROQ_STT_MODEL")) or DEFAULT_STT_MODEL
     kwargs = {"language": language} if language else {}
@@ -115,8 +118,15 @@ def transcribe_audio(audio_bytes: bytes, filename: str, language: Optional[str] 
         response_format="verbose_json",
         **kwargs,
     )
-    detected_language = "Urdu" if response.language.strip().lower() == "hindi" else response.language
-    return Transcript(text=response.text, language=detected_language)
+    if response.language.strip().lower() == "hindi":
+        response = client.audio.transcriptions.create(
+            model=model,
+            file=(filename, audio_bytes),
+            response_format="verbose_json",
+            language="ur",
+        )
+        return Transcript(text=response.text, language="Urdu")
+    return Transcript(text=response.text, language=response.language)
 
 
 def synthesize_speech(text: str) -> bytes:

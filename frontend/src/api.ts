@@ -91,6 +91,53 @@ export function base64AudioToUrl(base64: string): string | null {
   return URL.createObjectURL(blob);
 }
 
+/** speechSynthesis.getVoices() can return [] on the very first call -
+ * voice lists load asynchronously and the 'voiceschanged' event fires
+ * once they're ready. Waits for that (capped at 300ms - some browsers
+ * never fire it when there genuinely are no voices, so this can't wait
+ * forever). */
+function loadVoices(): Promise<SpeechSynthesisVoice[]> {
+  return new Promise((resolve) => {
+    const existing = window.speechSynthesis.getVoices();
+    if (existing.length > 0) {
+      resolve(existing);
+      return;
+    }
+    const onChange = () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", onChange);
+      clearTimeout(timer);
+      resolve(window.speechSynthesis.getVoices());
+    };
+    const timer = setTimeout(() => {
+      window.speechSynthesis.removeEventListener("voiceschanged", onChange);
+      resolve(window.speechSynthesis.getVoices());
+    }, 300);
+    window.speechSynthesis.addEventListener("voiceschanged", onChange);
+  });
+}
+
+/** Urdu voices are rare on desktop browsers/OSes - many installs have no
+ * "ur" voice at all, and some browsers (Chrome on Windows in particular)
+ * silently produce no audio at all for a `lang` with zero matching
+ * voices, rather than falling back to a default one. Picks the closest
+ * available voice instead of leaving that to the browser: an exact
+ * match, then same base language (e.g. any "ur-*"), then - specifically
+ * for Urdu - a Hindi voice as the nearest phonetic substitute (the two
+ * languages sound alike, so it's still intelligible), then whatever
+ * default voice the system has as a last resort. */
+function pickVoice(voices: SpeechSynthesisVoice[], lang: string): SpeechSynthesisVoice | null {
+  if (voices.length === 0) return null;
+  const lower = lang.toLowerCase();
+  const base = lower.split("-")[0];
+  return (
+    voices.find((v) => v.lang.toLowerCase() === lower) ??
+    voices.find((v) => v.lang.toLowerCase().startsWith(base)) ??
+    (base === "ur" ? voices.find((v) => v.lang.toLowerCase().startsWith("hi")) : undefined) ??
+    voices.find((v) => v.default) ??
+    voices[0]
+  );
+}
+
 /** Fallback voice for whenever the server sends no audio - either Groq TTS
  * isn't available (see backend README: Orpheus requires one-time terms
  * acceptance in the Groq console), or the reply is in a language Orpheus
@@ -102,16 +149,15 @@ export function base64AudioToUrl(base64: string): string | null {
  * speech finishes (or immediately if speech synthesis isn't available at
  * all), so callers running a hands-free listen/speak loop know when it's
  * safe to start listening for the caller's next turn. */
-export function speakWithBrowserVoice(text: string, lang: string): Promise<void> {
+export async function speakWithBrowserVoice(text: string, lang: string): Promise<void> {
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang;
+  utterance.rate = 1.0;
+  const voice = pickVoice(await loadVoices(), lang);
+  if (voice) utterance.voice = voice;
   return new Promise((resolve) => {
-    if (!("speechSynthesis" in window)) {
-      resolve();
-      return;
-    }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = lang;
-    utterance.rate = 1.0;
     utterance.onend = () => resolve();
     utterance.onerror = () => resolve();
     window.speechSynthesis.speak(utterance);

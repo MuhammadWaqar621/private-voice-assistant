@@ -69,7 +69,7 @@ describe("sendTurn", () => {
 });
 
 describe("speakWithBrowserVoice", () => {
-  it("sets the utterance's language so non-English text isn't mispronounced", () => {
+  it("sets the utterance's language so non-English text isn't mispronounced", async () => {
     // jsdom implements neither SpeechSynthesisUtterance nor
     // speechSynthesis - stub a minimal fake of each so the assertion can
     // inspect what speakWithBrowserVoice actually constructs and passes
@@ -77,6 +77,9 @@ describe("speakWithBrowserVoice", () => {
     class FakeUtterance {
       lang = "";
       rate = 1;
+      voice: unknown = null;
+      onend: (() => void) | null = null;
+      onerror: (() => void) | null = null;
       constructor(public text: string) {}
     }
     vi.stubGlobal("SpeechSynthesisUtterance", FakeUtterance);
@@ -84,10 +87,16 @@ describe("speakWithBrowserVoice", () => {
     const spoken: FakeUtterance[] = [];
     vi.stubGlobal("speechSynthesis", {
       cancel: vi.fn(),
-      speak: vi.fn((u: FakeUtterance) => spoken.push(u)),
+      getVoices: vi.fn(() => []),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      speak: vi.fn((u: FakeUtterance) => {
+        spoken.push(u);
+        u.onend?.();
+      }),
     });
 
-    speakWithBrowserVoice("Yeh Urdu jawab hai.", "ur-PK");
+    await speakWithBrowserVoice("Yeh Urdu jawab hai.", "ur-PK");
 
     expect(spoken).toHaveLength(1);
     expect(spoken[0].lang).toBe("ur-PK");

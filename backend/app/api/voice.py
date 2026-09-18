@@ -194,6 +194,17 @@ async def take_turn(
     try:
         transcript = transcribe_audio(audio_bytes, audio.filename or "clip.webm", language=_STT_LANGUAGE_HINT)
     except Exception as exc:  # noqa: BLE001 - surface any Groq failure clearly, don't crash
+        # The client already filters out clips held for under
+        # MIN_RECORDING_MS (see frontend/src/useRecorder.ts), but Groq's own
+        # "audio_too_short" rejection can still slip through (e.g. a held
+        # clip that ends up encoding to almost no audio data) - surfaced as
+        # a raw provider error string otherwise, which reads as gibberish
+        # in the frontend's toast.
+        if "audio_too_short" in str(exc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "audio_too_short", "message": "That was too short to hear - hold the mic a bit longer."},
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"error": "transcription_failed", "message": str(exc)},

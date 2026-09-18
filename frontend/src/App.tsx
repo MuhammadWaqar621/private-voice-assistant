@@ -25,15 +25,25 @@ function loadSavedProfile(): CompanyProfile {
   return { companyName: "", companyDetails: "" };
 }
 
+// How long a toast stays on screen before it auto-dismisses itself.
+const TOAST_MS = 4000;
+
 export default function App() {
   const [templates, setTemplates] = useState<ExampleTemplate[]>([]);
   const [companyName, setCompanyName] = useState("");
   const [companyDetails, setCompanyDetails] = useState("");
   const [stage, setStage] = useState<Stage>("setup");
   const [history, setHistory] = useState<ChatTurn[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { status: recStatus, start, stop } = useRecorder();
+
+  function showToast(message: string) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS);
+  }
 
   useEffect(() => {
     const saved = loadSavedProfile();
@@ -73,7 +83,6 @@ export default function App() {
   }
 
   async function handleCall() {
-    setError(null);
     setHistory([]);
     setStage("connecting");
     const company: CompanyProfile = { companyName, companyDetails };
@@ -83,7 +92,7 @@ export default function App() {
       playOrSpeak(greeting.greeting_audio_base64, greeting.greeting_text, greeting.language);
       setStage("connected");
     } catch (e) {
-      setError((e as Error).message);
+      showToast((e as Error).message);
       setStage("idle");
     }
   }
@@ -95,14 +104,16 @@ export default function App() {
 
   async function handleMicDown() {
     if (stage !== "connected") return;
-    setError(null);
     await start();
   }
 
   async function handleMicUp() {
     if (recStatus !== "recording") return;
     const clip = await stop();
-    if (!clip) return;
+    if (!clip) {
+      showToast("Hold the mic a bit longer to record.");
+      return;
+    }
 
     setStage("thinking");
     try {
@@ -116,7 +127,7 @@ export default function App() {
       setHistory(nextHistory);
       playOrSpeak(result.reply_audio_base64, result.reply_text, result.language);
     } catch (e) {
-      setError((e as Error).message);
+      showToast((e as Error).message);
     } finally {
       setStage("connected");
     }
@@ -189,7 +200,6 @@ export default function App() {
         <p className="subtitle">Calling: {companyName}</p>
       </header>
 
-      {error && <div className="banner error">{error}</div>}
       {recStatus === "denied" && (
         <div className="banner error">Microphone access was denied - allow it in your browser to talk.</div>
       )}
@@ -248,6 +258,11 @@ export default function App() {
       </div>
 
       <audio ref={audioRef} hidden />
+      {toast && (
+        <div className="toast" role="status" onClick={() => setToast(null)}>
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

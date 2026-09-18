@@ -9,9 +9,13 @@ import {
   type CompanyProfile,
   type ExampleTemplate,
 } from "./api";
-import { useRecorder } from "./useRecorder";
+import { useVoiceLoop } from "./useVoiceLoop";
 
-type Stage = "setup" | "idle" | "connecting" | "connected" | "thinking" | "ended";
+type Stage = "setup" | "idle" | "connecting" | "connected" | "ended";
+// What the hands-free loop is doing right now, only meaningful while
+// stage === "connected". null means the loop isn't running (call just
+// started, or just ended).
+type TurnPhase = "listening" | "thinking" | "speaking" | null;
 
 const STORAGE_KEY = "private-voice-assistant.company-profile";
 
@@ -33,16 +37,29 @@ export default function App() {
   const [companyName, setCompanyName] = useState("");
   const [companyDetails, setCompanyDetails] = useState("");
   const [stage, setStage] = useState<Stage>("setup");
+  const [turnPhase, setTurnPhase] = useState<TurnPhase>(null);
   const [history, setHistory] = useState<ChatTurn[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { status: recStatus, start, stop } = useRecorder();
+  // Mirrors `history` so the loop always sends the latest transcript even
+  // though it started running (and closed over `history`) turns ago.
+  const historyRef = useRef<ChatTurn[]>([]);
+  // Whether the hands-free listen/reply loop should keep going. A ref
+  // (not state) because handleEndCall must stop the loop on its very next
+  // check, not after a re-render.
+  const activeRef = useRef(false);
+  const { status: micStatus, listen, cancel } = useVoiceLoop();
 
   function showToast(message: string) {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(message);
     toastTimerRef.current = setTimeout(() => setToast(null), TOAST_MS);
+  }
+
+  function pushHistory(turns: ChatTurn[]) {
+    historyRef.current = turns;
+    setHistory(turns);
   }
 
   useEffect(() => {
@@ -72,25 +89,77 @@ export default function App() {
     setStage("idle");
   }
 
-  function playOrSpeak(audioBase64: string, text: string, lang: string) {
+  /** Plays the reply (server audio if we have it, else the browser's own
+   * voice) and resolves once it's actually finished playing - the loop
+   * awaits this so it doesn't start listening again while the assistant
+   * is still talking (which would otherwise just re-transcribe itself). */
+  function playReply(audioBase64: string, text: string, lang: string): Promise<void> {
     const url = base64AudioToUrl(audioBase64);
     if (url && audioRef.current) {
-      audioRef.current.src = url;
-      void audioRef.current.play();
-    } else {
-      speakWithBrowserVoice(text, lang);
+      const audio = audioRef.current;
+      audio.src = url;
+      return new Promise((resolve) => {
+        const onEnded = () => {
+          audio.removeEventListener("ended", onEnded);
+          resolve();
+        };
+        audio.addEventListener("ended", onEnded);
+        void audio.play().catch(() => {
+          audio.removeEventListener("ended", onEnded);
+          resolve();
+        });
+      });
     }
+    return speakWithBrowserVoice(text, lang);
+  }
+
+  /** The hands-free call loop: listen for a turn, send it, play the
+   * reply, repeat - until activeRef.current goes false (End Call) or the
+   * mic gets denied. */
+  async function runCallLoop(company: CompanyProfile) {
+    while (activeRef.current) {
+      setTurnPhase("listening");
+      const { blob, denied } = await listen();
+      if (!activeRef.current) break;
+
+      if (denied) {
+        showToast("Microphone access was denied - allow it in your browser to talk.");
+        break;
+      }
+      if (!blob) {
+        showToast("Didn't catch anything - try again.");
+        continue;
+      }
+
+      setTurnPhase("thinking");
+      try {
+        const result = await sendTurn(company, blob, historyRef.current);
+        pushHistory([
+          ...historyRef.current,
+          { role: "user", content: result.user_text },
+          { role: "assistant", content: result.reply_text },
+        ]);
+        if (!activeRef.current) break;
+        setTurnPhase("speaking");
+        await playReply(result.reply_audio_base64, result.reply_text, result.language);
+      } catch (e) {
+        showToast((e as Error).message);
+      }
+    }
+    setTurnPhase(null);
   }
 
   async function handleCall() {
-    setHistory([]);
+    pushHistory([]);
     setStage("connecting");
     const company: CompanyProfile = { companyName, companyDetails };
     try {
       const greeting = await fetchGreeting(company);
-      setHistory([{ role: "assistant", content: greeting.greeting_text }]);
-      playOrSpeak(greeting.greeting_audio_base64, greeting.greeting_text, greeting.language);
+      pushHistory([{ role: "assistant", content: greeting.greeting_text }]);
       setStage("connected");
+      activeRef.current = true;
+      await playReply(greeting.greeting_audio_base64, greeting.greeting_text, greeting.language);
+      if (activeRef.current) void runCallLoop(company);
     } catch (e) {
       showToast((e as Error).message);
       setStage("idle");
@@ -98,42 +167,13 @@ export default function App() {
   }
 
   function handleEndCall() {
+    activeRef.current = false;
+    cancel();
+    audioRef.current?.pause();
     window.speechSynthesis?.cancel();
+    setTurnPhase(null);
     setStage("ended");
   }
-
-  async function handleMicDown() {
-    if (stage !== "connected") return;
-    await start();
-  }
-
-  async function handleMicUp() {
-    if (recStatus !== "recording") return;
-    const clip = await stop();
-    if (!clip) {
-      showToast("Hold the mic a bit longer to record.");
-      return;
-    }
-
-    setStage("thinking");
-    try {
-      const company: CompanyProfile = { companyName, companyDetails };
-      const result = await sendTurn(company, clip, history);
-      const nextHistory: ChatTurn[] = [
-        ...history,
-        { role: "user", content: result.user_text },
-        { role: "assistant", content: result.reply_text },
-      ];
-      setHistory(nextHistory);
-      playOrSpeak(result.reply_audio_base64, result.reply_text, result.language);
-    } catch (e) {
-      showToast((e as Error).message);
-    } finally {
-      setStage("connected");
-    }
-  }
-
-  const onCall = stage === "connected" || stage === "thinking";
 
   if (stage === "setup") {
     return (
@@ -193,6 +233,17 @@ export default function App() {
     );
   }
 
+  const statusLabel =
+    stage === "connecting"
+      ? "Connecting…"
+      : turnPhase === "listening"
+        ? "🎙 Listening…"
+        : turnPhase === "thinking"
+          ? "Thinking…"
+          : turnPhase === "speaking"
+            ? "🔊 Speaking…"
+            : null;
+
   return (
     <div className="phone">
       <header>
@@ -200,7 +251,7 @@ export default function App() {
         <p className="subtitle">Calling: {companyName}</p>
       </header>
 
-      {recStatus === "denied" && (
+      {micStatus === "denied" && (
         <div className="banner error">Microphone access was denied - allow it in your browser to talk.</div>
       )}
 
@@ -220,28 +271,8 @@ export default function App() {
           </button>
         )}
 
-        {onCall && (
-          <button
-            className={`btn talk ${recStatus === "recording" ? "recording" : ""}`}
-            disabled={stage === "thinking"}
-            onMouseDown={handleMicDown}
-            onMouseUp={handleMicUp}
-            onMouseLeave={() => recStatus === "recording" && handleMicUp()}
-            onTouchStart={(e) => {
-              e.preventDefault();
-              void handleMicDown();
-            }}
-            onTouchEnd={(e) => {
-              e.preventDefault();
-              void handleMicUp();
-            }}
-          >
-            {stage === "thinking"
-              ? "Thinking…"
-              : recStatus === "recording"
-                ? "🔴 Release to send"
-                : "🎙 Hold to talk"}
-          </button>
+        {statusLabel && (
+          <p className={`call-status ${turnPhase === "listening" ? "listening" : ""}`}>{statusLabel}</p>
         )}
       </div>
 

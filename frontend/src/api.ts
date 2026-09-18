@@ -98,12 +98,22 @@ export function base64AudioToUrl(base64: string): string | null {
  * for English replies - see backend/app/api/voice.py's _try_synthesize).
  * `lang` (a BCP-47 tag from the API response) picks a matching voice/
  * pronunciation so a non-English reply isn't read with an English accent
- * or skipped by browsers that need an exact voice match. */
-export function speakWithBrowserVoice(text: string, lang: string): void {
-  if (!("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = lang;
-  utterance.rate = 1.0;
-  window.speechSynthesis.speak(utterance);
+ * or skipped by browsers that need an exact voice match. Resolves once
+ * speech finishes (or immediately if speech synthesis isn't available at
+ * all), so callers running a hands-free listen/speak loop know when it's
+ * safe to start listening for the caller's next turn. */
+export function speakWithBrowserVoice(text: string, lang: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) {
+      resolve();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = lang;
+    utterance.rate = 1.0;
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    window.speechSynthesis.speak(utterance);
+  });
 }

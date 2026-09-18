@@ -41,13 +41,13 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 
 _MAX_HISTORY_TURNS = 12  # caps prompt size/cost for a long-running demo call
 
-# Whisper's own language auto-detection regularly confuses spoken Urdu for
-# Hindi (the two are acoustically nearly identical), which then makes the
-# reply come back in Hindi script instead of Urdu. STT_LANGUAGE_HINT lets
-# ops pin transcription to a known-expected language (ISO-639-1, e.g. "ur")
-# to sidestep that ambiguity; unset it (empty string) to restore
-# auto-detection for callers speaking varied/unknown languages.
-_STT_LANGUAGE_HINT = os.getenv("STT_LANGUAGE_HINT", "ur").strip() or None
+# Forced to a specific ISO-639-1 language (e.g. "ur"), transcription would
+# stop auto-detecting entirely - fine for a caller who only ever speaks
+# Urdu, but it silently mis-transcribes every other language too. Left
+# unset by default so each caller's language auto-detects independently;
+# the Urdu/Hindi mixup itself is corrected in groq_client.transcribe_audio
+# instead, which only touches that one specific misdetection.
+_STT_LANGUAGE_HINT = os.getenv("STT_LANGUAGE_HINT", "").strip() or None
 
 # Groq's Orpheus TTS model (canopylabs/orpheus-v1-english) is English-only -
 # feeding it non-English text produces mispronounced/garbled audio rather

@@ -96,11 +96,16 @@ def transcribe_audio(audio_bytes: bytes, filename: str, language: Optional[str] 
     on any API failure - callers translate that into a clear HTTP error.
 
     `language` is an optional ISO-639-1 hint (e.g. "ur") forwarded to
-    Whisper to force decoding in that language instead of auto-detecting.
+    Whisper to force decoding in that language instead of auto-detecting -
+    normally left unset so every language auto-detects independently.
+
     Spoken Urdu and Hindi are acoustically almost identical, so Whisper's
-    auto-detection regularly guesses "hindi" for Urdu speech - which then
-    makes the reply come back in Hindi script instead of Urdu. Passing an
-    explicit hint sidesteps that ambiguity entirely."""
+    auto-detection regularly guesses "hindi" when the caller was actually
+    speaking Urdu. Forcing a language hint would "fix" that but also
+    breaks every other language (an English caller would get transcribed
+    as if they were speaking Urdu too), so instead only the detected
+    *label* gets corrected below when it comes back as "hindi" - every
+    other detected language passes through untouched."""
     client = get_groq_client()
     model = _clean(os.getenv("GROQ_STT_MODEL")) or DEFAULT_STT_MODEL
     kwargs = {"language": language} if language else {}
@@ -110,7 +115,8 @@ def transcribe_audio(audio_bytes: bytes, filename: str, language: Optional[str] 
         response_format="verbose_json",
         **kwargs,
     )
-    return Transcript(text=response.text, language=response.language)
+    detected_language = "Urdu" if response.language.strip().lower() == "hindi" else response.language
+    return Transcript(text=response.text, language=detected_language)
 
 
 def synthesize_speech(text: str) -> bytes:

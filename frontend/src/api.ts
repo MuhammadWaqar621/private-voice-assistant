@@ -26,7 +26,11 @@ export interface GreetingResult {
   language: string;
 }
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8010";
+// In production the backend is served from the same Vercel deployment (see
+// vercel.json's /api rewrite), so relative paths just work; only local dev
+// needs an absolute URL to reach the separately-running backend on :8010.
+const BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? "" : "http://localhost:8010");
 
 async function parseErrorDetail(resp: Response): Promise<string> {
   try {

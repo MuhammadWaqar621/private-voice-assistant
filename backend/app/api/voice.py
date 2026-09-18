@@ -28,6 +28,7 @@ rather than a database - a demo call has no need to survive a page reload.
 
 import base64
 import json
+import os
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
@@ -39,6 +40,14 @@ from app.groq_client import chat_reply, groq_configured, synthesize_speech, tran
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
 _MAX_HISTORY_TURNS = 12  # caps prompt size/cost for a long-running demo call
+
+# Whisper's own language auto-detection regularly confuses spoken Urdu for
+# Hindi (the two are acoustically nearly identical), which then makes the
+# reply come back in Hindi script instead of Urdu. STT_LANGUAGE_HINT lets
+# ops pin transcription to a known-expected language (ISO-639-1, e.g. "ur")
+# to sidestep that ambiguity; unset it (empty string) to restore
+# auto-detection for callers speaking varied/unknown languages.
+_STT_LANGUAGE_HINT = os.getenv("STT_LANGUAGE_HINT", "ur").strip() or None
 
 # Groq's Orpheus TTS model (canopylabs/orpheus-v1-english) is English-only -
 # feeding it non-English text produces mispronounced/garbled audio rather
@@ -183,7 +192,7 @@ async def take_turn(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio clip")
 
     try:
-        transcript = transcribe_audio(audio_bytes, audio.filename or "clip.webm")
+        transcript = transcribe_audio(audio_bytes, audio.filename or "clip.webm", language=_STT_LANGUAGE_HINT)
     except Exception as exc:  # noqa: BLE001 - surface any Groq failure clearly, don't crash
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
